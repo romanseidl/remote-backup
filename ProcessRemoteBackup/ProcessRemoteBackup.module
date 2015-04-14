@@ -75,7 +75,13 @@ class ProcessRemoteBackup extends Process implements ConfigurableModule {
     public function backup($id, $web = false, $output = true, $log = false) {
         $backup = new BackupJob($id, $this->getJobData($id), $this->data['backupdir'], $output, $log);
         $data = $backup->run($web);
-        $this->setJobData($id, $data);
+	//force reconnect if database has been lost due to long job runtime
+	try {
+	        $this->setJobData($id, $data);
+	} catch (Exception $e) {
+		$this->modules->wire('database')->closeConnection();
+	        $this->setJobData($id, $data);
+	}
     }
 
     //--------------------------------------------------------------------------
