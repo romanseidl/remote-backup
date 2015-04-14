@@ -1,0 +1,411 @@
+<?php
+
+/**
+ * Storage Mail
+ * 
+ * Sends a backup as mail attachment.
+ * If the file size exceeds a set limit it will get split. 
+ *
+ * This is an example of how write a RemoteStorageDriver
+ *  
+ * This uses PHPMailer library version v. 5.2.9 included from ./Mail/ as 
+ * WireMail does not support attachments. 
+ * 
+ * For now this mails all in a single smtp session - maybe thats not so safe?
+ *
+ * @copyright 2015, Roman Seidl
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ */
+require_once("RemoteStorageDriver.php");
+
+class StorageMail extends RemoteStorageDriver {
+
+    /**
+     * Required module information
+     *
+     */
+    public static function getModuleInfo() {
+        return array(
+            'title' => 'Remote Backup: Mail Storage',
+            'summary' => 'Allows to forward files by mail.',
+            'autor' => 'Roman Seidl',
+            'href' => '',
+            'singular' => false,
+            'autoload' => false,
+            'version' => 1,
+            'requires' => "ProcessRemoteBackup"
+        );
+    }
+
+    /**
+     * Includes PHPMail
+     */
+    public function init() {
+        parent::init();
+        require_once $this->moduleDir . 'Mail/class.phpmailer.php'; // or wherever autoload.php is located
+    }
+
+    /**
+     * Connects to the mail server 
+     * PHPMailer promises to throw Exceptions but does not do so in any case.
+     * This is VERY ugly. Maybe this is due to an old version?
+     * I don't even get errorInfo on smtp-connection failures...
+     * @param array $data job data
+     * @return bool/connection Should be true when successful.  
+     */
+    public function connect($data) {
+        $this->data = $data;
+        $this->mail = new PHPMailer();
+        $this->mail->CharSet = 'UTF-8';
+        $connect = true;
+        if ($data['smtp']) {
+            require_once $this->moduleDir . 'Mail/class.smtp.php'; // or wherever autoload.php is located
+            $this->mail->IsSMTP();
+            $mail->Debugoutput = 'html';
+
+            $this->mail->Host = $data['host'];
+            $port = $data['port'] ? $data['port'] : $data['secure'] ? 465 : 25;
+            $this->mail->Port = $port;
+            $this->mail->SMTPDebug = 0;
+
+            if ($data['secure'])
+                $this->mail->SMTPSecure = $data['secure'];
+
+            //Is there smtp auth?
+            if ($data['user']) {
+                //SMTP after pop
+                if ($data['pop']) {
+                    require_once $this->moduleDir . 'Mail/class.pop.php';
+                    $host = $data['pop-host'] ? $data['pop-host'] : $data['host'];
+                    $port = $data['pop-port'] ? $data['pop-port'] : 110;
+                    $this->log("POP connect to " . $host . ":" . $port);
+                    $pop = new POP3();
+                    $connect = $pop->Authorise($host, $port, 30, $data['user'], $data['password'], 1);
+                    $this->log("POP connect success: " . connect);
+                } else {
+                    $this->mail->SMTPAuth = true;
+                    $this->mail->Username = $data['user'];
+                    $this->mail->Password = $data['password'];
+                }
+            }
+            $this->log("SMTP connect to " . $this->mail->Host . ":" . $this->mail->Port);
+            if($connect)
+                $connect = $this->mail->smtpConnect();
+
+            if(!$connect)
+                throw new Exception($this->mail->ErrorInfo);
+        }
+        return $connect;
+    }
+
+    public function disconnect() {
+        if ($data['user'])
+            $mail->smtpClose();
+    }
+
+    /**
+     * Splits files if necessary and sends them as attachments
+     * @param type $filename
+     * @param type $mimeType
+     * @return bool/result should be true when successful
+     * @throws Exception
+     */
+    public function upload($filename, $mimeType = null) {
+
+        try {
+            if ($this->data['splitSize'] > 0)
+                $files = $this->split($filename, $this->data['splitSize']);
+            else
+                $files = array($filename);
+
+            $count = count($files);
+            $this->log("Sending " . $count . " mail(s).");
+            foreach ($files as $key => $file) {
+                $this->log("Sending mail #" . ($key + 1) . "/" . $count);
+                $mail = $this->mail;
+                $mail->SetFrom($this->data['sender-email'], '');
+
+                $subject = $this->data['subject'];
+                if ($count > 1)
+                    $subject .= " " . ($key + 1) . "/" . $count;
+
+                $mail->Subject = $subject;
+                $mail->Body = $subject;
+                $mail->ClearAttachments();
+                $mail->AddAddress($this->data['email']);
+                $mail->AddAttachment($file);
+
+                $result = $mail->Send();
+                if (!$result)
+                    throw new Exception($mail->ErrorInfo);
+            }
+            //the finally workaround for old php versions        
+        } catch (Exception $e) {
+            
+        }
+        try {
+            $this->removeSplitDir($filename);
+        } catch (Exception $ex) {
+            
+        }
+        if ($e)
+            throw $e;
+        return $result;
+    }
+
+    public static function getConfigFieldset($data) {
+        $modules = wire('modules');
+        $config = wire('config');
+        $user = wire('user');
+
+        $defaults = array(
+            "email" => $config->adminEmail ? $config->adminEmail : $user->email,
+            "sender-email" => $config->adminEmail ? $config->adminEmail : $user->email,
+            "secure" => 'ssl',
+            "subject" => "Site Backup Files",
+            "splitSize" => 20
+        );
+        $data = $data ? array_merge($defaults, $data) : $defaults;
+
+        $fieldset = $modules->get('InputfieldFieldset');
+        $fieldset->columnWidth = 100;
+        $fieldset->label = __("Mail Settings");
+
+        //Mail Settings
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "email";
+        $f->label = __("Recipient");
+        $f->description = __("Recipient email");
+        $f->value = $data["email"];
+        $f->columnWidth = 25;
+
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "sender-email";
+        $f->label = __("Sender");
+        $f->description = __("Sender email");
+        $f->value = $data["sender-email"];
+        $f->columnWidth = 25;
+
+        $fieldset->append($f);
+        $f = $modules->get('InputfieldText');
+        $f->name = "subject";
+        $f->label = __("Subject");
+        $f->description = __("Subject for the emails sent.");
+        $f->columnWidth = 25;
+        $f->value = $data["subject"];
+        $fieldset->append($f);
+
+
+        $fieldset->append($f);
+        $f = $modules->get('InputfieldInteger');
+        $f->name = "splitSize";
+        $f->label = __("Split Files to multiple mails");
+        $f->description = __("Split size (in MB). 0=No split.");
+        $f->columnWidth = 25;
+        $f->value = $data["splitSize"];
+        $fieldset->append($f);
+
+        //SMTP Settings
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = "smtp";
+        $f->label = __("SMTP Transport");
+        $f->description = __("Send mail by smtp not by local sendmail.");
+        $f->checked = $data["smtp"];
+        $fieldset->append($f);
+
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "host";
+        $f->label = __("Server");
+        $f->columnWidth = 25;
+        //	$f->showIf = "smtp!=0";
+        $f->requiredIf = "smtp=1";
+        $f->description = __("Hostname or IP of the SMTP host.");
+        $f->value = $data["host"];
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldInteger');
+        $f->name = "port";
+        $f->label = __("Server port");
+
+        $f->columnWidth = 15;
+        $f->description = __("Empty: 25/465");
+        $f->value = $data["port"];
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldSelect');
+        $f->name = "secure";
+        $f->label = __("SMTP Security");
+        $f->description = __("Server connection security.");
+        $f->addOption("ssl");
+        $f->addOption("tls");
+        $f->columnWidth = 60;
+        //$f->showIf = "smtp=1";
+        $f->value = $data["secure"];
+        $fieldset->append($f);
+
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "user";
+        $f->label = __("Username");
+        $f->description = __("Leave blank for no SMTP auth.");
+        $f->value = $data["user"];
+        //$f->showIf = "smtp=1";
+        $f->columnWidth = 25;
+
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "password";
+        $f->label = __("Password");
+        $f->description = __("Server Password.");
+        $f->columnWidth = 25;
+        //$f->showIf = "smtp=1, user!=''";
+        $f->requiredIf = "user!=''";
+        $f->type = 'password';
+        $f->value = $data["password"];
+        $fieldset->append($f);
+
+        //POP Settings
+
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = "pop";
+        $f->label = __("SMTP after POP");
+        $f->description = __("Use SMTP after POP authentification.");
+        //$f->showIf = "smtp=1,user!=''";
+        $f->checked = $data["pop"];
+        $f->columnWidth = 50;
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "pop-host";
+        $f->label = __("POP Server");
+        $f->columnWidth = 25;
+        //$f->showIf = "pop=1";
+        $f->description = __("Empty: Same as SMTP-Server.");
+        $f->value = $data["pop-host"];
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldInteger');
+        $f->name = "pop-port";
+        $f->label = __("POP Server port");
+        $f->columnWidth = 25;
+        //$f->showIf = "pop=1";
+        $f->description = __("Empty: 110");
+        $f->value = $data["pop-port"];
+        $fieldset->append($f);
+
+
+        return $fieldset;
+    }
+
+    private function getSplitDir($filename) {
+        $splitdir = dirname($filename) . "/split";
+    }
+
+    private function removeSplitDir($filename) {
+        $splitdir = $this->getSplitDir($filename);
+        return unlink($this->getSplitDir($filename));
+    }
+
+    /**
+     * delete all files in dir
+     * @param type $splitdir
+     */
+    private function cleanSplitDir($splitdir) {
+        $files = glob($splitdir . '/*');
+        foreach ($files as $file) { // iterate files
+            if (is_file($file))
+                unlink($file); // delete file
+        }
+    }
+
+    /**
+     * cleans / creates a split directory 
+     * @param string $filename
+     * @return string path to the splitDir
+     */
+    private function initSplitDir($filename) {
+        $splitdir = $this->getSplitDir($filename);
+
+        if (file_exists($splitdir)) {
+            $this->cleanSplitDir($splitdir);
+        } else {
+            wireMkdir($splitdir);
+        }
+        return $splitdir;
+    }
+
+    /**
+     * splits a file to the asked size in bytes if necessary 
+     * if it is not necessary returns the original file (in array)
+     * @param sting/path $filename 
+     * @param int $piecesize size in bytes
+     * @param string/path $targetfolder directory to write to
+     * @return array files 
+     */
+    private function split($filename, $piecesize, $targetfolder = null) {
+        $targetfolder = $this->initSplitDir($filename);
+
+        $buffer = 1024;
+        $piece = 1048576 * $piecesize;
+        $current = 0;
+        $splitnum = 1;
+
+
+
+        if (filesize($filename) > $piece) {
+            $this - log("Splitting to pieces of " . $piecesize . "MB.");
+
+
+
+            if (!$handle = fopen($filename, "rb")) {
+                $this->log("Unable to open $filename for read! Make sure you edited filesplit.php correctly!");
+                return false;
+            }
+
+            $base_filename = basename($filename);
+
+            $piece_name = $targetfolder . '/' . $base_filename . '.' . str_pad($splitnum, 3, "0", STR_PAD_LEFT);
+            if (!$fw = fopen($piece_name, "w")) {
+                $this->log("Unable to open $piece_name for write. Make sure target folder is writeable.");
+                return false;
+            }
+
+            $this->log("Splitting $base_filename into $piecesize Mb files (last piece may be smaller in size)");
+            $this->log("Writing $piece_name...");
+
+            $pieces = array($piece_name);
+            while (!feof($handle) and $splitnum < 999) {
+                if ($current < $piece) {
+                    if ($content = fread($handle, $buffer)) {
+                        if (fwrite($fw, $content)) {
+                            $current += $buffer;
+                        } else {
+                            $this->log("filesplit.php is unable to write to target folder. Target folder may not have write permission! Try chmod +w target_folder");
+                            return false;
+                        }
+                    }
+                } else {
+                    fclose($fw);
+                    $current = 0;
+                    $splitnum++;
+                    $piece_name = $targetfolder . '/' . $base_filename . '.' . str_pad($splitnum, 3, "0", STR_PAD_LEFT);
+                    array_push($pieces, $piece_name);
+                    $this->log("Writing $piece_name...");
+                    $fw = fopen($piece_name, "w");
+                }
+            }
+            fclose($fw);
+            fclose($handle);
+            return ($pieces);
+        } else {
+            $this->log("Not splitting small file.");
+            return array($filename);
+        }
+    }
+
+}

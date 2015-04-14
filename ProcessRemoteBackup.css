@@ -1,0 +1,22 @@
+#backup-tabs.ui-tabs .ui-tabs-nav {
+    background:none;
+}
+
+.AdminDataTable button {
+    margin-top:7px;
+    margin-bottom:7px;
+    margin-left:2px;
+}
+
+.AdminDataTable .ui-button-text {
+    white-space:nowrap;
+}
+
+#backup-test-result {
+    font-weight: bold;
+    margin-left: 10px;
+}
+
+.ui-tooltip {
+    max-width: 600px !important;
+}

@@ -1,0 +1,261 @@
+<?php
+
+/**
+ * Storage Google Drive
+ * 
+ * Allows to connect to google drive server and upload, list and delete files.
+ * Uses the google api stored in ./Google
+ * Version: commit ca2e3d5bd6d71860bd089ef148341f15330bda08
+ * https://github.com/google/google-api-php-client/commit/ca2e3d5bd6d71860bd089ef148341f15330bda08
+ * 
+ * You have to create a Service account with the google developers console and 
+ * add the key file to the plugin directory (or another directory if you specify
+ * a relative or absolute path to that file).
+ * s. https://developers.google.com/identity/protocols/OAuth2ServiceAccount#creatinganaccount
+ * 
+ * I don't use the OAuth token process because it is not more secure. Once there 
+ * is a renew token (which is necessary to avoid user interaction) it is as 
+ * powerful and insecure as a keyfile. It is just  more complex as it needs a 
+ * callback url for registering.
+ * 
+ * In case you can prove otherwise I will implement the callback registration.
+ *
+ * @copyright 2015, Roman Seidl
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ */
+require_once("RemoteDirectoryDriver.php");
+
+class StorageGoogleDrive extends RemoteDirectoryDriver {
+
+    /**
+     * Required module information
+     *
+     */
+    public static function getModuleInfo() {
+        return array(
+            'title' => 'Remote Backup: Google Storage',
+            'summary' => 'Allows to upload files to google storage.',
+            'autor' => 'Roman Seidl',
+            'href' => '',
+            'singular' => false,
+            'autoload' => false,
+            'version' => 1,
+            'requires' => "ProcessRemoteBackup"
+        );
+    }
+
+    /**
+     * Init - includes google client
+     *
+     */
+    public function init() {
+        parent::init();
+        //Init Google Library
+        $this->service = null;
+        require_once $this->moduleDir . 'Google/autoload.php'; // or wherever autoload.php is located
+    }
+
+    /**
+     * Connects and gets a token. 
+     * Maybe one should store the token as google 
+     * will only keep 25 tokens per account (is it the dev account?) and if
+     * you use other apps too this migh be a problem. Also I had some trouble 
+     * with Google blocking me when constantnly reconnecting.
+     * @param array $config
+     * @return Google_Service_Drive
+     */
+    public function connect($config = null) {
+        $this->data = $config;
+        
+        $cacheDir = $this->moduleDir.'google-cache';
+        if(!is_dir($cacheDir))
+            wireMkdir($cacheDir);
+
+        if (!$this->service) {
+            $this->log("Creating Google Client.");
+            $client = new Google_Client();
+            $client->setClassConfig('Google_Cache_File', array(
+                'directory' => $cacheDir
+            ));
+        } else {
+            $client = $this->service->getClient();
+        }
+
+        $this->service = new Google_Service_Drive($client);
+
+        if ($client->getAuth()->isAccessTokenExpired()) {
+            $this->log("Creating Google Auth.");
+            $key = file_get_contents($this->moduleDir . $config['keyFile']);
+            $cred = new Google_Auth_AssertionCredentials($config['clientEmail'], array(
+                'https://www.googleapis.com/auth/drive'
+                    ), $key);
+            $client->setAssertionCredentials($cred);
+            $client->getAuth()->refreshTokenWithAssertion($cred);
+        }
+        return $this->service;
+    }
+
+    /**
+     * Google does not recommend you to revoke tokens.
+     */
+    public function disconnect() {
+//	$this->service->getClient()->revokeToken();
+    }
+
+    /**
+     * Uploads a file and shares it with the user given in the config
+     * As we use a service account it is necessary to share after upload
+     * @param type $filename
+     * @param type $mimeType
+     * @return string fileId
+     */
+    public function upload($filename, $mimeType = null) {
+        $service = $this->service;
+
+        $this->log("Backup of file " . $filename . " to Google Drive");
+        //Insert a file
+        $file = new Google_Service_Drive_DriveFile();
+        $file->setTitle(basename($filename));
+
+        if ($mimeType)
+            $file->setMimeType('text/plain');
+
+        //The number of bytes 
+        $chunkSizeBytes = 5 * 1024 * 1024;
+
+        // Call the API with the media upload, defer so it doesn't immediately return.
+        $service->getClient()->setDefer(true);
+
+        $request = $service->files->insert($file);
+
+        // Create a media file upload to represent our upload process.
+        $media = new Google_Http_MediaFileUpload(
+                $service->getClient(), $request, $mimeType, null, true, $chunkSizeBytes
+        );
+
+        $media->setFileSize(filesize($filename));
+
+        // Upload the various chunks. $status will be false until the process is
+        // complete.
+        $count = 0;
+        $chunkSizeMB = $chunkSizeBytes / (1024 * 1024);
+
+        $status = false;
+        $handle = fopen($filename, "rb");
+        while (!$status && !feof($handle)) {
+            $chunk = fread($handle, $chunkSizeBytes);
+            $status = $media->nextChunk($chunk);
+            $count++;
+            $this->log("Uploaded " . ($count * $chunkSizeMB) . "MB");
+        }
+
+        // The final value of $status will be the data from the API for the object
+        // that has been uploaded.
+        $result = false;
+        if ($status != false) {
+            $result = $status;
+        }
+
+        fclose($handle);
+
+        // Reset to the client to execute requests immediately in the future.
+        $service->getClient()->setDefer(false);
+
+        //Share the file
+        $permission = new Google_Service_Drive_Permission();
+        $permission->setRole('writer');
+        $permission->setType('user');
+        $permission->setValue($this->data['user']);
+
+
+        $perm = $service->permissions->insert($result->getId(), $permission);
+
+        if ($permission->getId() && unlink)
+            unlink($file);
+        $this->log($perm->getId() ? "Successfully uploaded file." : "Upload failed!");
+        return $perm->getId();
+    }
+
+    /**
+     * Finds a file with the given prefix
+     * @param type $prefix
+     * @return array of fileIds
+     */
+    public function find($prefix) {
+        if (!is_array($this->sizes))
+            $this->sizes = array();
+        if (!is_array($this->mdates))
+            $this->mdates = array();
+
+
+        do {
+            $parameters = array();
+            //$parameters['q'] = "title contains '".$prefix . "'";
+            if ($pageToken) {
+                $parameters['pageToken'] = $pageToken;
+            }
+            $files = $this->service->files->listFiles($parameters);
+//		$this->log_r($files);
+
+            foreach ($files->getItems() as $file) {
+                $id = $file->getId();
+                $result[] = $id;
+                $this->mdates[$id] = strtotime($file->getModifiedDate());
+                $this->sizes[$id] = $file->getFileSize();
+            };
+
+            $pageToken = $files->getNextPageToken();
+        } while ($pageToken);
+
+        return $result;
+    }
+
+    public function size($id) {
+        return $this->sizes[$id];
+    }
+
+    public function mdate($id) {
+        return $this->mdates[$id];
+    }
+
+    function delete($id) {
+        return $this->service->files->delete($id);
+    }
+
+    public static function getConfigFieldset($data) {
+        $modules = wire('modules');
+
+        $defaults = array(
+		    "keyFile" => "key.p12"
+		);
+        $data     = $data ? array_merge($defaults, $data) : $defaults;     
+
+        $fieldset = $modules->get('InputfieldFieldset');
+        $fieldset->columnWidth = 50;
+        $fieldset->label = __("Google Drive Settings");
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "user";
+        $f->label = __("Drive User");
+        $f->description = __("Google Drive User that should be able to access the files.");
+        $f->value = $data["user"];
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "clientEmail";
+        $f->label = __("Service Account Client Email");
+        $f->description = __("Google Drive OAuth Service Account Email");
+        $f->value = $data["clientEmail"];
+        $fieldset->append($f);
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "keyFile";
+        $f->label = __("Key File");
+        $f->description = __("Name of the P12 Key file. Path is relative to the module directory.");
+        $f->value = $data["keyFile"];
+        $fieldset->append($f);
+
+        return $fieldset;
+    }
+
+}

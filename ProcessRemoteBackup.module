@@ -1,0 +1,698 @@
+<?php
+
+/**
+ * Process Remote Backup
+ * 
+ * This is the main process class containing the config admin and hooks for the 
+ * installers of RemoteStorageDriver modules.
+ *
+ * @copyright 2015, Roman Seidl
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ * 
+ * @todo mind the processwire logging system when overwriting log. 
+ *       maybe do not construct a file log at all and use the default logs?
+ * @todo Multithreading / Locks 
+ *       If this class is singular it might be safe but a backup locks the whole
+ *       site. Maybe one should think what should be locking (e.g. the admin 
+ *       part?) and move this to another module as the one handling the 
+ *       autoload init thing. 
+ * @todo rethink / discuss th autoload init as a hook. maybe a page would be 
+ *       better.
+ * @todo Hooks for the oAuth system ? -> maybe try with Dropbox - 
+ *       of no use with google drive as it is not more secure.
+ */
+include_once 'BackupJob.php';
+
+class ProcessRemoteBackup extends Process implements ConfigurableModule {
+
+    /**
+     * Required module information
+     *
+     */
+    public static function getModuleInfo() {
+        return array(
+            'title' => 'Remote Backup',
+            'summary' => 'Create backup files and upload them to a remote storage.',
+            'autor' => 'Roman Seidl',
+            'href' => '',
+            'singular' => false,
+            'autoload' => true,
+            'version' => 2,
+            'icon' => 'truck',
+            'page' => array(
+                'name' => 'remote-backup',
+                'parent' => 'setup',
+                'title' => __('Remote Backup'),
+            ),
+            'requires' => 'ProcessWire>=2.4.14'
+        );
+    }
+
+    /**
+     * Processwire init - handles the web call for now
+     */
+    public function init() {
+        parent::init();
+
+        $input = wire('input');
+        $key = $this->data['token'];
+
+        // Run the backup if the correct URL is requested
+        if ($input->get[$key] !== null) {
+            $id = $input->get[$key];
+            $this->backup($id, true, $input->get->log !== null);
+            die();
+        }
+    }
+
+    /**
+     * Run a job and save the data to log
+     * @param int $id job id
+     * @param bool $web is this a web based call?
+     * @param bool $output log to stdout
+     * @param bool $log log to file
+     */
+    public function backup($id, $web = false, $output = true, $log = false) {
+        $backup = new BackupJob($id, $this->getJobData($id), $this->data['backupdir'], $output, $log);
+        $data = $backup->run($web);
+        $this->setJobData($id, $data);
+    }
+
+    //--------------------------------------------------------------------------
+    // Process Page Functions
+    //--------------------------------------------------------------------------
+
+    /**
+     * Lists all jobs
+     * @return string
+     */
+    public function execute() {
+//	if(!$this->user->isSuperuser()) throw new WirePermissionException("This module requires superuser access");
+
+        if (count($this->get('storageClasses')) > 0) {
+
+            $backups = $this->getJobs();
+            if (count($backups) > 0) {
+                $out = "<h2>Backup Jobs</h2>";
+
+                $table = $this->modules->get('MarkupAdminDataTable');
+                $table->setEncodeEntities(false);
+
+                $table->headerRow(array("Job", "Info", "Last Run", "Edit"));
+
+                foreach ($backups as $key => $data) {
+                    $id = $key; //$data['id'];
+                    $editurl = "./job/" . $id . "/";
+
+                    $button = $this->modules->get('InputfieldButton');
+                    $button->value = $this->_("Settings");
+                    $button->icon = 'cogs';
+                    $button->href = $editurl;
+                    $buttons = "<small>" . $button->render() . "</small>";
+
+                    $button = $this->modules->get('InputfieldButton');
+                    $button->value = $this->_("Show Log");
+                    $button->icon = 'align-justify';
+                    $button->href = './log/' . $id . '/';
+                    $buttons .= "<small>" . $button->render() . "</small>";
+
+                    $title = "<span data-name='$editurl'>" . $data['name'] . "</span>";
+
+                    $info = "Storage Driver: " . $data['storageClass'] . "<br/>";
+
+                    $info .= "<a href='" . $this->config->urls->root . "?" . $this->data['token'] . "=" . $key . "'>Run job (without debug info)</a><br/>";
+                    $info .= "<a href='" . $this->config->urls->root . "?" . $this->data['token'] . "=" . $key . "&log=1'>Run job (with debug info)</a><br/>";
+                    $info .= "<small><pre>php " . dirname(__FILE__) . "/backup.php " . $id . "</pre></small>";
+
+                    $lastRun = $this->getLastRunData($id);
+                    if ($lastRun) {
+                        $last = "<b><a href='./log/" . $id . "/'>" . ( $lastRun['error'] ? "Error" : ($lastRun['date'] == $lastRun['runDate'] ? "Success" : "Success (did not repeat)")) . "</a></b>";
+                        $last .= "<br/>Date: " . date('Y-m-d H:i:s', $lastRun['date']);
+                        if ($lastRun['date'] != $lastRun['runDate'])
+                            $last .= "<br/>Backup Date: " . date('Y-m-d H:i:s', $lastRun['runDate']);
+
+                        $last .= "<br/>Filename: " . $lastRun['file'];
+                        $last .= $lastRun['error'] ? "<br/>Error : " . $lastRun['error'] : "";
+                    } else {
+                        $last = "Not run yet";
+                    }
+
+                    $row = array(
+                        $title => $editurl,
+                        $info,
+                        $last,
+                        $buttons,
+                    );
+
+                    $table->row($row);
+                }
+                $out .= $table->render();
+            }
+
+            $out .= "<h2>Add Job</h2>";
+
+            $button = $this->modules->get('InputfieldButton');
+            $button->value = $this->_("Add Job");
+            $button->icon = 'plus-circle';
+            $button->href = "./add/";
+            $out .= "<small>" . $button->render() . "</small>";
+        } else {
+            $out = "<h2>Please install a Storage Driver module to run a remote backup.</h2>";
+        }
+
+        return $out;
+    }
+
+    /**
+     * Show & Clear Log
+     * @return type
+     */
+    public function executeTest() {
+
+        //Get the current store
+        $basicFieldset = $this->basicFieldset();
+        $basicFieldset->processInput($this->input->post);
+        $store = $this->modules->get($basicFieldset->storageClass->value);
+
+        if (!$store) {
+            $this->error("Storage Class $store not found!");
+            return;
+        } else {
+            $storageForm = $store->getConfigFieldset($data["storageData"]);
+        }
+
+        $storageForm->processInput($this->input->post);
+
+        $data = $this->formDataToArray($basicFieldset);
+        $data[self::storageData] = $this->formDataToArray($storageForm);
+
+        $backup = new BackupJob($id, $data, null, false, false);
+        try {
+            $test = $backup->testConnection();
+        } catch (Exception $ex) {
+            $error = $ex->getMessage() ? $ex->getMessage() : "Connection failed";
+        }
+        echo json_encode(array('success' => $test,
+            'error' => $error,
+            'log' => $backup->getLogBufferHTML()));
+        die();
+    }
+
+    /**
+     * Show & Clear Log
+     * @return type
+     */
+    public function executeLog() {
+        //Check id & data
+        $id = $this->input->urlSegment2;
+        if (!$id)
+            $this->session->redirect('../');
+
+        $data = $this->getJobData($id);
+        $logs = $data[self::runData];
+        if (!$logs)
+            $this->session->redirect('../');
+
+        //Clear log
+        if ($this->input->post('submit-log')) {
+            $lastLog = $this->getLastRunData($id);
+            $lastLog['log'] = null;
+
+            $data[self::runData] = array($lastLog);
+            $this->setJobData($id, $data);
+
+            $this->session->redirect($this->url);
+        }
+
+
+        $out = "<h2>Logs</h2>";
+
+        $wrapper = $this->modules->get("InputfieldForm");
+        $wrapper->action = "./";
+        $wrapper->method = "post";
+        $wrapper->attr("id+name", 'log-form');
+        $wrapper->columnWidth = 100;
+
+        //List logs
+        foreach ($logs as $log) {
+            $status = date('Y-m-d H:i:s', $log['date']);
+            $status .= $log['error'] ? " - Error - " : " - " . ($log['date'] == $log['runDate'] ? "Success" : "Success (did not repeat)") . " - ";
+            $status .= $log['file'];
+
+            $fieldset = $this->modules->get('InputfieldFieldset');
+            $fieldset->columnWidth = 100;
+            $fieldset->label = $status;
+            $fieldset->collapsed = !$log["log"] ? 9 : 1;
+            if ($log["log"]) {
+                $f = $this->modules->get('InputfieldMarkup');
+                $f->label = __("Log");
+                $f->value = str_replace("\n", "<br/>", $log["log"]);
+                $f->collapsed = 0;
+                $fieldset->append($f);
+            }
+
+            $wrapper->prepend($fieldset);
+        }
+        $fieldset->collapsed = !$log["log"] ? 9 : 0;
+
+        //Clear Button
+        if ($log["log"]) {
+            $clear = $this->modules->get("InputfieldSubmit");
+            $clear->attr("value", $this->_("Clear Log"));
+            $clear->attr("id+name", "submit-log");
+            $clear->icon = 'trash';
+            $wrapper->prepend($clear);
+        }
+
+        $out .= $wrapper->render();
+        return $out;
+    }
+
+    /**
+     * Edit / Delete Job 
+     * @return type
+     */
+    public function executeJob() {
+        //Check id & data
+        $id = $this->input->urlSegment2;
+        if (!$id)
+            $this->session->redirect('../');
+
+        $data = $this->getJobData($id);
+        if (!data)
+            $this->session->redirect('../');
+
+        //delete - as it is in the same form it is here...
+        if ($this->input->post('submit-delete')) {
+            if ($this->input->post('confirm')) {
+                $this->removeJobData($id);
+                $this->message("Deleted job " . $this->input->post('name') . " (#" . $id . ")");
+                $this->session->redirect('../');
+            } else {
+                $this->error("Check confirm to delete job!");
+            }
+        }
+
+        //Get & Update basic data
+        $basicFieldset = $this->basicFieldset(__("Basic Settings"), $data);
+        $post = $this->input->post('submit-edit') || $this->input->post('submit-change');
+        if ($post)
+            $basicFieldset->processInput($this->input->post);
+
+        //Get the current store
+        $store = $this->modules->get($basicFieldset->storageClass->value);
+
+        //Get Job & Storage form
+        $jobForm = BackupJob::getFieldset($data["processData"], $store instanceof RemoteDirectoryDriver);
+        if (!$store)
+            $this->error("Storage Class $store not found!");
+        else
+            $storageForm = $store->getConfigFieldset($data["storageData"]);
+
+        //Handle submit change
+        if ($post) {
+            $jobForm->processInput($this->input->post);
+            $errors = array_merge($basicFieldset->getErrors(), $jobForm->getErrors());
+
+            if ($store && !$this->input->post('submit-change')) {
+                $storageForm->processInput($this->input->post);
+                $errors = $storageForm ? array_merge($errors, $storageForm->getErrors()) : $errors;
+            }
+
+            //Has to bo edited once more?
+            if ($this->input->post('submit-change') || $errors || $storageForm == null) {
+                foreach ($errors as $error)
+                    $this->error($error);
+            } else {
+                //Save data
+                $this->saveFormData($id, $basicFieldset);
+                $this->saveFormData($id, $jobForm, self::processData);
+                $this->saveFormData($id, $storageForm, self::storageData);
+                //Redirect to list
+                $this->session->redirect('../');
+            }
+        }
+
+        $form = $this->modules->get("InputfieldForm");
+        $form->action = "./";
+        $form->method = "post";
+        $form->attr("id+name", 'edit-form');
+
+        //change Button
+        if (count($this->get('storageClasses')) > 1) {
+            $change = $this->modules->get("InputfieldSubmit");
+            $change->attr("value", $this->_("Change"));
+            $change->icon = 'angle-right';
+            $change->showIf = "storageClass!='" . $basicFieldset->storageClass->value . "'";
+            $change->attr("id+name", "submit-change");
+            $basicFieldset->append($change);
+        }
+
+        //Forms
+        $form->append($basicFieldset);
+        $form->append($jobForm);
+        if ($storageForm) {
+            $storageClass = $basicFieldset->storageClass->value;
+            $storageForm->showIf = "storageClass='" . $storageClass . "'";
+
+            $test = $this->modules->get("InputfieldButton");
+            $test->attr("value", $this->_("Test Connection"));
+            $test->icon = 'spinner';
+            $test->id = 'test-connection';
+            $test->attr('url', '../../test/' . $id . '/');
+            //$test->attr("id+name", "submit-change");
+            $storageForm->append($test);
+
+            $form->append($storageForm);
+        }
+
+        //Delete Fieldset
+        $fieldset = $this->modules->get('InputfieldFieldset');
+        $fieldset->columnWidth = 100;
+        $fieldset->label = __("Delete");
+        $fieldset->collapsed = true;
+
+        $field = $this->modules->get("InputfieldCheckbox");
+        $field->label = "Delete";
+        $field->description = "Check the box to confirm that you want to do this. All config data will be lost.";
+        $field->attr('id+name', 'confirm');
+        $field->set('label2', 'Confirm');
+        $fieldset->append($field); // append the field to the form
+
+        $submit = $this->modules->get("InputfieldSubmit");
+        $submit->attr("value", $this->_("Delete Job"));
+        $submit->icon = 'trash';
+        $submit->attr("id+name", "submit-delete");
+        $fieldset->append($submit);
+
+        $form->append($fieldset);
+
+        //submit button
+        $submit = $this->modules->get("InputfieldSubmit");
+        $submit->attr("value", $this->_("Save"));
+        $submit->icon = 'angle-right';
+        $submit->attr("id+name", "submit-edit");
+        $form->append($submit);
+
+        $out = "<h2>Edit Job</h2>";
+        $out .= $form->render();
+        return $out;
+    }
+
+    /**
+     * Add a new Job
+     * @return type
+     */
+    public function executeAdd() {
+        //Construct form
+        $newform = $this->modules->get("InputfieldForm");
+        $newform->action = "./";
+        $newform->method = "post";
+        $newform->attr("id+name", 'add-form');
+
+        $newform->append($this->basicFieldset(__("Add Job")));
+
+        $submit = $this->modules->get("InputfieldSubmit");
+        $submit->attr("value", $this->_("Add Job"));
+        $submit->icon = 'plus-circle';
+        $submit->attr("id+name", "submit-add");
+        $newform->append($submit);
+
+        //Handle submit
+        if ($this->input->post('submit-add')) {
+            $newform->processInput($this->input->post);
+            if (!$newform->getErrors()) {
+                //find minimum key
+                $id = 0;
+                foreach ($this->getJobs() as $key => $data)
+                    if ($key > $id)
+                        $id = $key;
+                $id +=1;
+
+                $this->setJobData($id, array('name' => $this->input->post('name'),
+                    'storageClass' => $this->input->post('storageClass'),
+                    self::processData => array(),
+                    self::storageData => array(),
+                    self::runData => array()));
+                $this->message("Added new Job " . $this->input->post('name'));
+                $this->session->redirect($this->page->url . "/job/" . $id . "/");
+            }
+        }
+
+        $out = "<h2>Add Job</h2>";
+        $out .= $newform->render();
+        return $out;
+    }
+
+    //--------------------------------------------------------------------------
+    // Data Functions
+    //--------------------------------------------------------------------------
+
+    const jobData = 'backupProcesses';
+    const runData = 'runs';
+    const storageData = 'storageData';
+    const processData = 'processData';
+
+    /**
+     * Safely adds a value to an associative array
+     * Creates the associative array if there is none
+     * Used by the installer hooks for Storage Drivers
+     * @param type $storekey data element that contains the array
+     * @param type $key 
+     * @param type $value can be omitted, then $key => $key is set
+     */
+    private function addData($storekey, $key, $value = false) {
+        if (!$value)
+            $value = $key;
+
+        $dat = $this->get($storekey);
+
+        if (!is_array($dat))
+            $dat = array();
+
+        $dat[$key] = $value;
+
+        $this->set($storekey, $dat);
+        $this->save();
+    }
+
+    /**
+     * unsets a value in an associative array 
+     * used by the uninstallers of Storage Drivers and to remove jobs
+     * @param type $storekey
+     * @param type $key
+     */
+    private function removeData($storekey, $key) {
+        unset($this->data[$storekey][$key]);
+        $this->save();
+    }
+
+    /**
+     * Returns all jobs data - public because used by the command line interface
+     * @return type array of associative job data arrays
+     */
+    public function getJobs() {
+        return $this->data[self::jobData];
+    }
+
+    /**
+     * Returns the data for a job
+     * @param type $id job id
+     * @return type assciative array
+     */
+    private function getJobData($id) {
+        return $this->data[self::jobData][$id];
+    }
+
+    /**
+     * Removes (unsets) the data for a job
+     * @param type $id job id
+     * @return type
+     */
+    private function removeJobData($id) {
+        return $this->removeData(self::jobData, $id);
+    }
+
+    /**
+     * Set / Update job data
+     * @param type $id
+     * @param type $value
+     */
+    private function setJobData($id, $value) {
+        $this->data[self::jobData][$id] = $value;
+        $this->save();
+    }
+
+    /**
+     * Returns the data of the last job run 
+     * @param type $id job id
+     * @return type associative array of job run data
+     */
+    private function getLastRunData($id) {
+        return end($this->data[self::jobData][$id][self::runData]);
+    }
+
+    /**
+     * Save current module config
+     */
+    private function save() {
+        $this->modules->saveModuleConfigData('ProcessRemoteBackup', $this->data);
+    }
+
+    /**
+     * Copies all form data to an associative array
+     * @param type $form
+     * @return array
+     */
+    private function formDataToArray($form) {
+        $fields = $form->getAll();
+        $settings = array();
+        foreach ($fields as $field) {
+            $settings[$field->name] = $field->value;
+        }
+        return $settings;
+    }
+
+    /**
+     * Saves the data of a form for a job to the respective part of the wire-data
+     * @param type $id job id
+     * @param type $form form
+     * @param type $key key for subdata
+     */
+    private function saveFormData($id, $form, $key = null) {
+        $settings = $this->formDataToArray($form);
+        if ($key) {
+            $this->data[self::jobData][$id][$key] = $settings;
+            $this->save();
+        } else
+            $this->setJobData($id, $settings);
+        $this->save();
+    }
+
+    //--------------------------------------------------------------------------
+    // Installer Functions
+    //--------------------------------------------------------------------------
+
+    /*
+     * Installation - sets default values to config
+     * backupdir and a token get set
+     */
+    public function ___install() {
+        parent::___install();
+
+        $basedir = wire('config')->paths->root;
+        $dir = $this->config->paths->assets . "remote-backup/";
+        $dir = str_replace($basedir, "", $dir);
+
+        //If there is openssl use openssl for the creation of a token
+        if (extension_loaded('openssl')) {
+            $token = $token = str_replace("=", "", base64_encode(openssl_random_pseudo_bytes(32)));
+        } else {
+            //Kind of semi secure token generation - maybe should check for openssl
+            //Not too sure if this is not secure in case there is not idea when this was started
+            while (($len = strlen($data)) < 32) {
+                $data .= chr(mt_rand(0, 255));
+            }
+            $token = str_replace("=", "", base64_encode($data));
+        }
+
+        // Create a security token
+        wire('modules')->saveModuleConfigData('ProcessRemoteBackup', array(
+            'backupdir' => $dir,
+            'token' => $token,
+        ));
+    }
+
+    /**
+     * Adds a storage class - install of the storage classes calls this
+     * @param type $storageClass classname of the storage class
+     */
+    public function addStorageClass($storageClass) {
+        $this->addData('storageClasses', $storageClass);
+    }
+
+    /**
+     * Removes a storage class - uninstall of the storage classes calls this
+     * @param type $storageClass
+     */
+    public function removeStorageClass($storageClass) {
+        $this->removeData('storageClasses', $storageClass);
+    }
+
+    //--------------------------------------------------------------------------
+    // Job & Module Configuation Fieldsets / Forms
+    //--------------------------------------------------------------------------
+
+    /**
+     * Fieldset for basic job data
+     * @param type $label label of the fieldset
+     * @param type $data data to prefill the form with
+     * @return type fieldset
+     */
+    private function basicFieldset($label = "Basic Data", $data = array()) {
+        $fieldset = $this->modules->get('InputfieldFieldset');
+        $fieldset->columnWidth = 100;
+        $fieldset->label = $label;
+
+        //Name
+        $field = $this->modules->get("InputfieldText");
+        $field->label = "Name";
+        $field->attr('id+name', 'name');
+        $field->required = 1;
+        $field->value = $data['name'];
+        $field->columnWidth = 40;
+        $field->collapsed = 9;
+        $fieldset->append($field);
+
+        //StorageClass
+        $field = $this->modules->get("InputfieldSelect");
+        $field->label = "Storage";
+        $field->attr('id+name', 'storageClass');
+        $field->required = true;
+        $field->columnWidth = 60;
+        $field->collapsed = 9;
+        $field->value = $data['storageClass'];
+        foreach ($this->get('storageClasses') as $store)
+            $field->addOption($store);
+        $fieldset->append($field);
+
+        return $fieldset;
+    }
+
+    /**
+     * Module settings
+     *
+     */
+    public static function getModuleConfigInputfields(array $data) {
+
+        $modules = wire('modules');
+        $config = wire('config');
+        $inputfields = new InputfieldWrapper();
+
+        $fieldset = $modules->get('InputfieldFieldset');
+        $fieldset->columnWidth = 100;
+        $fieldset->label = __("Backup Settings");
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "token";
+        $f->label = __("Backup Token");
+        $f->description = __("Url Parameter that calls the backup function. The backup can be called by adding " . "?" . $data["token"] . "=<id>");
+        $f->value = $data["token"];
+        $fieldset->append($f);
+
+
+        $f = $modules->get('InputfieldText');
+        $f->name = "backupdir";
+        $f->label = __("Backup Dir");
+        $f->description = __("Directory where the temporary backup files will be .");
+        $f->value = $data["backupdir"];
+        $fieldset->append($f);
+
+
+        $inputfields->append($fieldset);
+
+
+        return $inputfields;
+    }
+
+}
