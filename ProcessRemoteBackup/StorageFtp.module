@@ -28,6 +28,13 @@ class StorageFtp extends RemoteDirectoryDriver {
 		);
 	}
 
+	/**
+	* Setup connection
+	*
+	* @todo fix if else structure (another method?)
+	* @return connection or false
+	*
+	*/
 	public function connect($config) {
 		$this->data = $config;
 		$port = $config['port'] ? $config['port'] : 21;
@@ -37,7 +44,7 @@ class StorageFtp extends RemoteDirectoryDriver {
 
 		if ($protocol == 'ftp_tls_ssl') {
 			$this->connection = ftp_ssl_connect($config['host'], $port, $timeout);
-		} else {
+		} elseif ($protocol == 'ftp') {
 			$this->connection = ftp_connect($config['host'], $port, $timeout);
 		}
 
