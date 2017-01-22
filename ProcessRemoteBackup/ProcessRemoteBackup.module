@@ -44,7 +44,7 @@ class ProcessRemoteBackup extends Process implements ConfigurableModule {
                 'parent' => 'setup',
                 'title' => __('Remote Backup'),
             ),
-            'requires' => 'ProcessWire>=2.4.14'
+            'requires' => 'ProcessWire>=3.0.42'
         );
     }
 
@@ -441,7 +441,7 @@ class ProcessRemoteBackup extends Process implements ConfigurableModule {
                     self::storageData => array(),
                     self::runData => array()));
                 $this->message("Added new Job " . $this->input->post('name'));
-                $this->session->redirect($this->page->url . "/job/" . $id . "/");
+                $this->session->redirect($this->page->url . "job/" . $id . "/");
             }
         }
 
