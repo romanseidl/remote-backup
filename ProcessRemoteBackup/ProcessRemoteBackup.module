@@ -44,7 +44,7 @@ class ProcessRemoteBackup extends Process implements ConfigurableModule {
                 'parent' => 'setup',
                 'title' => __('Remote Backup'),
             ),
-            'requires' => 'ProcessWire>=2.4.14'
+            'requires' => 'ProcessWire>=3.0.42'
         );
     }
 
