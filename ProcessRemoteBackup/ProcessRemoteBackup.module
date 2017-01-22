@@ -441,7 +441,7 @@ class ProcessRemoteBackup extends Process implements ConfigurableModule {
                     self::storageData => array(),
                     self::runData => array()));
                 $this->message("Added new Job " . $this->input->post('name'));
-                $this->session->redirect($this->page->url . "/job/" . $id . "/");
+                $this->session->redirect($this->page->url . "job/" . $id . "/");
             }
         }
 
