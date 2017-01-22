@@ -15,164 +15,164 @@ require_once("RemoteDirectoryDriver.php");
 
 class StorageFtp extends RemoteDirectoryDriver {
 
-	public static function getModuleInfo() {
-		return array(
-			'title' => 'Remote Backup: FTP Storage',
-			'summary' => 'Allows to upload files to ftp.',
-			'autor' => 'Roman Seidl',
-			'href' => '',
-			'singular' => false,
-			'autoload' => false,
-			'version' => 1,
-			'requires' => "ProcessRemoteBackup"
-		);
-	}
+    public static function getModuleInfo() {
+        return array(
+            'title' => 'Remote Backup: FTP Storage',
+            'summary' => 'Allows to upload files to ftp.',
+            'autor' => 'Roman Seidl',
+            'href' => '',
+            'singular' => false,
+            'autoload' => false,
+            'version' => 1,
+            'requires' => "ProcessRemoteBackup"
+        );
+    }
 
-	/**
-	* Setup connection
-	*
-	* @todo fix if else structure (another method?)
-	* @return connection or false
-	*
-	*/
-	public function connect($config) {
-		$this->data = $config;
-		$port = $config['port'] ? $config['port'] : 21;
-		$timeout = $config['timeout'] ? $config['timeout'] : 90;
-		$protocol = $config['protocol'] ? $config['protocol'] : 'ftp';
-		$this->log("Connecting to " . $config['host'] . ":" . $port . " (Timeout:" . $timeout . ")");
+    /**
+    * Setup connection
+    *
+    * @todo fix if else structure (another method?)
+    * @return connection or false
+    *
+    */
+    public function connect($config) {
+        $this->data = $config;
+        $port = $config['port'] ? $config['port'] : 21;
+        $timeout = $config['timeout'] ? $config['timeout'] : 90;
+        $protocol = $config['protocol'] ? $config['protocol'] : 'ftp';
+        $this->log("Connecting to " . $config['host'] . ":" . $port . " (Timeout:" . $timeout . ")");
 
-		if ($protocol == 'ftp_tls_ssl') {
-			$this->connection = ftp_ssl_connect($config['host'], $port, $timeout);
-		} elseif ($protocol == 'ftp') {
-			$this->connection = ftp_connect($config['host'], $port, $timeout);
-		}
+        if ($protocol == 'ftp_tls_ssl') {
+            $this->connection = ftp_ssl_connect($config['host'], $port, $timeout);
+        } elseif ($protocol == 'ftp') {
+            $this->connection = ftp_connect($config['host'], $port, $timeout);
+        }
 
-		if ($this->connection) {
-			$this->log("Connected");
-			if (ftp_login($this->connection, $config['user'], $config['password'])) {
-				$this->log("Logged in");
-				ftp_pasv($this->connection, $config['passive']);
-				ftp_chdir($this->connection, $config['serverDirectory']);
+        if ($this->connection) {
+            $this->log("Connected");
+            if (ftp_login($this->connection, $config['user'], $config['password'])) {
+                $this->log("Logged in");
+                ftp_pasv($this->connection, $config['passive']);
+                ftp_chdir($this->connection, $config['serverDirectory']);
 
-				return $this - connection;
-			}
-		}
-		return false;
-	}
+                return $this - connection;
+            }
+        }
+        return false;
+    }
 
-	public function disconnect() {
-		ftp_close($this->connection);
-	}
+    public function disconnect() {
+        ftp_close($this->connection);
+    }
 
-	public function upload($filename, $mimeType = null) {
-		return ftp_put($this->connection, basename($filename), $filename, FTP_BINARY);
-	}
+    public function upload($filename, $mimeType = null) {
+        return ftp_put($this->connection, basename($filename), $filename, FTP_BINARY);
+    }
 
-	public function delete($file) {
-		return ftp_delete($this->connection, $file);
-	}
+    public function delete($file) {
+        return ftp_delete($this->connection, $file);
+    }
 
-	public function mdate($file) {
-		return ftp_mdtm($this->connection, $file);
-	}
+    public function mdate($file) {
+        return ftp_mdtm($this->connection, $file);
+    }
 
-	public function size($file) {
-		return ftp_size($this->connection, $file);
-	}
+    public function size($file) {
+        return ftp_size($this->connection, $file);
+    }
 
-	public function find($prefix) {
-		return ftp_nlist($this->connection, $prefix . "*");
-	}
+    public function find($prefix) {
+        return ftp_nlist($this->connection, $prefix . "*");
+    }
 
-	public static function getConfigFieldset($data) {
-		$modules = wire('modules');
+    public static function getConfigFieldset($data) {
+        $modules = wire('modules');
 
-		$defaults = array(
-				"passive" => true
-			);
-		$data     = $data ? array_merge($defaults, $data) : $defaults;
+        $defaults = array(
+                "passive" => true
+            );
+        $data     = $data ? array_merge($defaults, $data) : $defaults;
 
-		$fieldset = $modules->get('InputfieldFieldset');
-		$fieldset->columnWidth = 50;
-		$fieldset->label = __("FTP Settings");
+        $fieldset = $modules->get('InputfieldFieldset');
+        $fieldset->columnWidth = 50;
+        $fieldset->label = __("FTP Settings");
 
-		$f = $modules->get('InputfieldText');
-		$f->name = "user";
-		$f->label = __("Username");
-		$f->description = __("Should be able to write to the directory.");
-		$f->value = $data["user"];
-		$f->columnWidth = 20;
+        $f = $modules->get('InputfieldText');
+        $f->name = "user";
+        $f->label = __("Username");
+        $f->description = __("Should be able to write to the directory.");
+        $f->value = $data["user"];
+        $f->columnWidth = 20;
 
-		$fieldset->append($f);
+        $fieldset->append($f);
 
-		$f = $modules->get('InputfieldText');
-		$f->name = "password";
-		$f->label = __("Password");
-		$f->description = __("FTP Password.");
-		$f->columnWidth = 20;
-		$f->type = 'password';
-		$f->value = $data["password"];
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldText');
+        $f->name = "password";
+        $f->label = __("Password");
+        $f->description = __("FTP Password.");
+        $f->columnWidth = 20;
+        $f->type = 'password';
+        $f->value = $data["password"];
+        $fieldset->append($f);
 
-		$f = $modules->get('InputfieldText');
-		$f->name = "host";
-		$f->label = __("Server");
-		$f->columnWidth = 20;
-		$f->description = __("Hostname or IP.");
-		$f->value = $data["host"];
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldText');
+        $f->name = "host";
+        $f->label = __("Server");
+        $f->columnWidth = 20;
+        $f->description = __("Hostname or IP.");
+        $f->value = $data["host"];
+        $fieldset->append($f);
 
-		$protocols = array(
-			"ftp" => "FTP",
-			"ftp_tls_ssl" => "FTP with TLS/SSL",
-			);
+        $protocols = array(
+            "ftp" => "FTP",
+            "ftp_tls_ssl" => "FTP with TLS/SSL",
+            );
 
-		$f = $modules->get('InputfieldSelect');
-		$f->name = "protocol";
-		$f->label = __("Protocol");
-		$f->columnWidth = 20;
-		$f->description = __("Protocol of the FTP host.");
-		$f->value = $data["protocol"];
-		$f->required = true;
-		foreach ($protocols as $key => $value)
-			$f->addOption($key, $value);
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldSelect');
+        $f->name = "protocol";
+        $f->label = __("Protocol");
+        $f->columnWidth = 20;
+        $f->description = __("Protocol of the FTP host.");
+        $f->value = $data["protocol"];
+        $f->required = true;
+        foreach ($protocols as $key => $value)
+            $f->addOption($key, $value);
+        $fieldset->append($f);
 
-		$f = $modules->get('InputfieldInteger');
-		$f->name = "port";
-		$f->label = __("Server port");
-		$f->columnWidth = 20;
-		$f->description = __("Empty: 21");
-		$f->value = $data["port"];
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldInteger');
+        $f->name = "port";
+        $f->label = __("Server port");
+        $f->columnWidth = 20;
+        $f->description = __("Empty: 21");
+        $f->value = $data["port"];
+        $fieldset->append($f);
 
-		$f = $modules->get('InputfieldText');
-		$f->name = "serverDirectory";
-		$f->columnWidth = 66;
-		$f->label = __("Server Direcory");
-		$f->description = __("Directory on the server where the files will be stored.");
-		$f->value = $data["serverDirectory"];
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldText');
+        $f->name = "serverDirectory";
+        $f->columnWidth = 66;
+        $f->label = __("Server Direcory");
+        $f->description = __("Directory on the server where the files will be stored.");
+        $f->value = $data["serverDirectory"];
+        $fieldset->append($f);
 
-		$f = $modules->get('InputfieldInteger');
-		$f->name = "timeout";
-		$f->columnWidth = 17;
-		$f->label = __("Connection timeout");
-		$f->description = __("Empty: 90 seconds");
-		$f->value = $data["timeout"];
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldInteger');
+        $f->name = "timeout";
+        $f->columnWidth = 17;
+        $f->label = __("Connection timeout");
+        $f->description = __("Empty: 90 seconds");
+        $f->value = $data["timeout"];
+        $fieldset->append($f);
 
-		$f = $modules->get('InputfieldCheckbox');
-		$f->name = "passive";
-		$f->columnWidth = 17;
-		$f->label = __("Passive Mode");
-		$f->description = __("FTP passive mode");
-		$f->checked = $data["passive"];
-		$fieldset->append($f);
+        $f = $modules->get('InputfieldCheckbox');
+        $f->name = "passive";
+        $f->columnWidth = 17;
+        $f->label = __("Passive Mode");
+        $f->description = __("FTP passive mode");
+        $f->checked = $data["passive"];
+        $fieldset->append($f);
 
 
-		return $fieldset;
-	}
+        return $fieldset;
+    }
 
 }
